@@ -57,7 +57,7 @@ def _is_blank_or_comment(line: str) -> bool:
     return s == '' or s.startswith('%')
 
 
-def _find_entry_prefix_start(lines: list[str], trigger_idx: int) -> int:
+def _find_prefix_start(lines: list[str], trigger_idx: int) -> int:
     """Walk backwards from trigger_idx to include preceding blank/comment lines."""
     ps = trigger_idx
     j = trigger_idx - 1
@@ -136,7 +136,7 @@ def section_split(body_lines: list[str]) -> list[tuple[list[str], list[str]]]:
     # For each section, walk backwards to absorb leading blank/comment lines
     prefix_starts = [] # starting indices before {section}
     for si in section_indices:
-        ps = _find_entry_prefix_start(body_lines, si)
+        ps = _find_prefix_start(body_lines, si)
         prefix_starts.append(ps)
 
     # Build (header_lines, content_lines) pairs
@@ -178,15 +178,15 @@ def parse_standard_entries(
         # No entries — everything is list_prefix
         return (''.join(content_lines), [], '')
 
-    # Compute prefix_starts for each trigger
-    prefix_starts = [_find_entry_prefix_start(content_lines, ti) for ti in trigger_indices]
+    # Compute entry_start_list for each trigger
+    entry_start_list = [_find_prefix_start(content_lines, ti) for ti in trigger_indices]
 
-    list_prefix_end = prefix_starts[0]
+    list_prefix_end = entry_start_list[0]
     list_prefix = ''.join(content_lines[:list_prefix_end])
 
     entries = []
     for k, ti in enumerate(trigger_indices):
-        entry_start = prefix_starts[k]
+        entry_start = entry_start_list[k]
 
         # Walk forward until \\resumeItemListEnd (inclusive)
         entry_end = ti
@@ -216,7 +216,6 @@ def _find_last_resumeitemlistend(lines: list[str], from_idx: int) -> int:
         if r'\resumeItemListEnd' in lines[j]:
             return j
     return len(lines) - 1
-
 
 def _build_standard_label(lines: list[str], trigger_idx: int, trigger: str) -> str:
     """
