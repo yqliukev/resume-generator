@@ -3,7 +3,10 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Entry:
-    ''' Entry within a section, e.g. "Backend Developer @ Ground News". '''
+    '''
+      Entry within a section, e.g. "Backend Developer @ Ground News". 
+      Each "skill line" is an entry.
+    '''
     display_label: str   # clean text for UI tree (e.g. "Backend Dev @ Ground News")
     raw_text: str        # verbatim source lines, preserved for output
     selected: bool = True
