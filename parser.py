@@ -323,7 +323,7 @@ def _build_skills_label(raw_text: str) -> str:
     groups = extract_brace_groups(after, 1)
     if groups:
         label = strip_latex(groups[0])
-        # Append any text after the closing brace (e.g., " C++, Python...")
+        # Append some text after the closing brace (e.g., " C++, Python...")
         after_brace = after
         depth = 0
         end_idx = 0
