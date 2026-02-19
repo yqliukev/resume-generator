@@ -287,8 +287,9 @@ def parse_skills_entries(
                 if depth == 0:
                     break
 
-        j = i + 1
+        # parse subsequent lines until all braces are closed
         while depth > 0 and j < len(content_lines):
+            j = i + 1
             next_line = content_lines[j]
             raw_line_accum.append(next_line)
             for ch in next_line:
@@ -298,9 +299,8 @@ def parse_skills_entries(
                     depth -= 1
                     if depth == 0:
                         break
-            j += 1
 
-        entry_end = j - 1
+        entry_end = j
         raw_text = ''.join(raw_line_accum)
 
         # Build display label: text inside the braces
