@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Entry:
+    ''' Entry within a section, e.g. "Backend Developer @ Ground News". '''
     display_label: str   # clean text for UI tree (e.g. "Backend Dev @ Ground News")
     raw_text: str        # verbatim source lines, preserved for output
     selected: bool = True
@@ -10,6 +11,7 @@ class Entry:
 
 @dataclass
 class Section:
+    ''' Document section, e.g. "Work Experience". '''
     name: str            # e.g. "Work Experience"
     section_type: str    # "standard" | "skills"
     raw_header: str      # "\section{...}" line verbatim (may include preceding comment)
