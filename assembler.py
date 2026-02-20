@@ -1,0 +1,61 @@
+import subprocess
+from models import ResumeDocument
+
+def assemble(doc: ResumeDocument) -> str:
+    """Build the output .tex string from the document model."""
+    parts = [doc.preamble, doc.header]
+
+    for section in doc.sections:
+        if not section.selected:
+            continue
+
+        selected_entries = [e for e in section.entries if e.selected]
+        parts.append(section.raw_header)
+
+        if selected_entries:
+            parts.append(section.list_prefix)
+            for entry in selected_entries:
+                parts.append(entry.raw_text)
+            parts.append(section.list_suffix)
+
+    parts.append(doc.trailing)
+    return ''.join(parts)
+
+
+def write_tex(content: str, path: str) -> None:
+    """Write assembled content to a .tex file."""
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def compile_pdf(tex_path: str, output_dir: str) -> tuple[bool, str]:
+    """
+    Run pdflatex twice on tex_path, placing output in output_dir.
+    Returns (success, log_output).
+    Raises FileNotFoundError if pdflatex is not on PATH.
+    """
+    cmd = [
+        'pdflatex',
+        '-interaction=nonstopmode',
+        f'-output-directory={output_dir}',
+        tex_path,
+    ]
+
+    log_lines = []
+    for _pass in range(2): # latex is quirky and needs multiple passes for references
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=output_dir,
+            )
+            log_lines.append(result.stdout)
+            if result.returncode != 0:
+                combined = '\n'.join(log_lines)
+                tail = '\n'.join(combined.splitlines()[-20:])
+                return False, tail
+        except FileNotFoundError:
+            raise
+
+    return True, '\n'.join(log_lines)
