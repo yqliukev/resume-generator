@@ -287,20 +287,23 @@ def parse_skills_entries(
                 if depth == 0:
                     break
 
-        # parse subsequent lines until all braces are closed
-        while depth > 0 and j < len(content_lines):
+        # Accumulate subsequent lines if argument spans multiple lines
+        entry_end = i
+        if depth > 0:
             j = i + 1
-            next_line = content_lines[j]
-            raw_line_accum.append(next_line)
-            for ch in next_line:
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        break
+            while depth > 0 and j < len(content_lines):
+                next_line = content_lines[j]
+                raw_line_accum.append(next_line)
+                for ch in next_line:
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            break
+                entry_end = j
+                j += 1
 
-        entry_end = j
         raw_text = ''.join(raw_line_accum)
 
         # Build display label: text inside the braces
@@ -308,7 +311,7 @@ def parse_skills_entries(
         entries.append(Entry(display_label=label, raw_text=raw_text))
 
         last_item_end = entry_end
-        i = j  # advance past this entry
+        i = entry_end + 1  # advance past this entry
 
     list_suffix = ''.join(content_lines[last_item_end + 1:])
     return list_prefix, entries, list_suffix
