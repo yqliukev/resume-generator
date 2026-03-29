@@ -26,6 +26,7 @@ class Section:
 
 @dataclass
 class ResumeDocument:
+    ''' Parameters also called Zones '''
     preamble: str           # everything up to (not including) \begin{center}
     header: str             # \begin{center}...\end{center} block (inclusive)
     sections: list = field(default_factory=list)
