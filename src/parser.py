@@ -1,5 +1,5 @@
 import re
-from src.models import Entry, Section, ResumeDocument
+from models import Entry, Section, ResumeDocument
 
 
 # ---------------------------------------------------------------------------
