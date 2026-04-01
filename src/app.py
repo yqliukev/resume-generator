@@ -5,8 +5,8 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from parser import parse_file
-from assembler import assemble, write_tex, compile_pdf
+from src.parser import parse_file
+from src.assembler import assemble, write_tex, compile_pdf
 
 
 class App(ctk.CTk):

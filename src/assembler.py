@@ -1,6 +1,6 @@
 import subprocess
 from pathlib import Path
-from models import ResumeDocument
+from src.models import ResumeDocument
 
 def assemble(doc: ResumeDocument) -> str:
     """Build the output .tex string from the document model."""
