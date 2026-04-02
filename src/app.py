@@ -86,34 +86,42 @@ class App(ctk.CTk):
         bottom.grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 8))
         bottom.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(bottom, text="Output:").grid(
+        ctk.CTkLabel(bottom, text="Output folder:").grid(
             row=0, column=0, padx=(10, 6), pady=6, sticky="w"
         )
-        self.output_entry = ctk.CTkEntry(
-            bottom, placeholder_text="/path/to/output.tex"
+        self.output_dir_entry = ctk.CTkEntry(
+            bottom, placeholder_text="/path/to/output/folder"
         )
-        self.output_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=6)
+        self.output_dir_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=6)
         ctk.CTkButton(
-            bottom, text="Browse", width=90, command=self._browse_output
+            bottom, text="Browse", width=90, command=self._browse_output_dir
         ).grid(row=0, column=2, padx=(4, 10), pady=6)
+
+        ctk.CTkLabel(bottom, text="Output file name:").grid(
+            row=1, column=0, padx=(10, 6), pady=6, sticky="w"
+        )
+        self.output_name_entry = ctk.CTkEntry(
+            bottom, placeholder_text="output.tex"
+        )
+        self.output_name_entry.grid(row=1, column=1, sticky="ew", padx=4, pady=6)
 
         self.compile_var = tkinter.IntVar(value=0)
         ctk.CTkCheckBox(
             bottom, text="Compile to PDF", variable=self.compile_var
-        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
 
         self.generate_btn = ctk.CTkButton(
             bottom, text="Generate", width=110,
             command=self._generate, state="disabled"
         )
-        self.generate_btn.grid(row=1, column=2, padx=(4, 10), pady=(0, 4))
+        self.generate_btn.grid(row=2, column=2, padx=(4, 10), pady=(0, 4))
 
         self.status_label = ctk.CTkLabel(
             bottom, text="Status: Ready", anchor="w",
             font=ctk.CTkFont(size=12)
         )
         self.status_label.grid(
-            row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8)
+            row=3, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8)
         )
 
     # ------------------------------------------------------------------
@@ -138,10 +146,13 @@ class App(ctk.CTk):
         self.file_path = path
         self.file_label.configure(text=path)
 
-        # Default output path beside the source file
-        base = os.path.splitext(path)[0]
-        self.output_entry.delete(0, "end")
-        self.output_entry.insert(0, base + "_output.tex")
+        # Default output folder and name beside the source file
+        source_dir = os.path.dirname(path)
+        source_name = os.path.splitext(os.path.basename(path))[0]
+        self.output_dir_entry.delete(0, "end")
+        self.output_dir_entry.insert(0, source_dir)
+        self.output_name_entry.delete(0, "end")
+        self.output_name_entry.insert(0, source_name + "_output.tex")
 
         self._build_tree()
         self.generate_btn.configure(state="normal")
@@ -274,19 +285,24 @@ class App(ctk.CTk):
         )
 
     # ------------------------------------------------------------------
-    # Browse output path
+    # Browse output folder
     # ------------------------------------------------------------------
 
-    def _browse_output(self):
-        path = filedialog.asksaveasfilename(
-            title="Save output as",
-            defaultextension=".tex",
-            filetypes=[("LaTeX files", "*.tex"), ("All files", "*.*")],
-            initialfile=os.path.basename(self.output_entry.get()) or "output.tex",
+    def _browse_output_dir(self):
+        initial_dir = self.output_dir_entry.get().strip()
+        if not initial_dir:
+            if self.file_path:
+                initial_dir = os.path.dirname(self.file_path)
+            else:
+                initial_dir = os.getcwd()
+
+        path = filedialog.askdirectory(
+            title="Select output folder",
+            initialdir=initial_dir,
         )
         if path:
-            self.output_entry.delete(0, "end")
-            self.output_entry.insert(0, path)
+            self.output_dir_entry.delete(0, "end")
+            self.output_dir_entry.insert(0, path)
 
     # ------------------------------------------------------------------
     # Generate
@@ -307,10 +323,25 @@ class App(ctk.CTk):
         if not self.doc or self._generating:
             return
 
-        output_path = self.output_entry.get().strip()
-        if not output_path:
-            messagebox.showwarning("No output path", "Please specify an output .tex file path.")
+        output_dir = self.output_dir_entry.get().strip()
+        output_name = self.output_name_entry.get().strip()
+
+        if not output_dir:
+            messagebox.showwarning("No output folder", "Please specify an output folder.")
             return
+        if not output_name:
+            messagebox.showwarning("No output file name", "Please specify an output file name.")
+            return
+        if os.path.basename(output_name) != output_name:
+            messagebox.showwarning("Invalid file name", "Output file name must not include folder separators.")
+            return
+        if not output_name.lower().endswith(".tex"):
+            output_name += ".tex"
+        if not os.path.isdir(output_dir):
+            messagebox.showwarning("Invalid output folder", "The selected output folder does not exist.")
+            return
+
+        output_path = os.path.join(output_dir, output_name)
 
         self._sync_model()
         tex_content = assemble(self.doc)
