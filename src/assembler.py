@@ -30,7 +30,7 @@ def write_tex(content: str, path: str) -> None:
 
 
 def _cleanup_latex_intermediates(tex_path: str, output_dir: str) -> None:
-    """Delete common LaTeX byproducts while keeping .tex and .pdf files."""
+    """Delete common LaTeX byproducts and original .tex file, only keeping .pdf files."""
     stem = Path(tex_path).stem
     base = Path(output_dir)
 
@@ -53,6 +53,7 @@ def _cleanup_latex_intermediates(tex_path: str, output_dir: str) -> None:
         '.blg',
         '.bcf',
         '.run.xml',
+        '.tex',
     }
 
     for ext in extensions:
