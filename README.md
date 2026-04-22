@@ -7,3 +7,5 @@ Designed for the "[Resume in Latex][https://www.overleaf.com/latex/templates/cs-
 - Link generated pdfs to base tex file
     - update linked pdfs whenever base is updated
 - Management app for linked files
+- Remove intermediate files in compile file
+- Automatically append .tex if name is not present
