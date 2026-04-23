@@ -312,7 +312,7 @@ def load_source_links(source_path: str) -> SourceLinkRecord:
 
 
 def save_source_links(record: SourceLinkRecord) -> str:
-    """Persist link metadata atomically and return the metadata file path."""
+    """Update link file with new record, and return the metadata file path."""
     source_abs = _normalize_abs(record.source_path)
     record.source_path = source_abs
     record.source_last_seen_mtime, record.source_last_seen_size = _source_stat(source_abs)
@@ -460,7 +460,6 @@ def update_target_sections_from_document(
         target_path,
         sections_from_resume_document(document),
     )
-
 
 def refresh_source_sections_from_file(source_path: str) -> SourceLinkRecord:
     """Parse source_path and persist source section metadata from parser results."""
