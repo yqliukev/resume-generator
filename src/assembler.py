@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from models import ResumeDocument
+from persistence import parse_and_persist_source_document
 
 def assemble(doc: ResumeDocument) -> str:
     """Build the output .tex string from the document model."""
@@ -21,6 +22,12 @@ def assemble(doc: ResumeDocument) -> str:
 
     parts.append(doc.trailing)
     return ''.join(parts)
+
+
+def parse_and_assemble_source(source_path: str) -> tuple[ResumeDocument, str]:
+    """Parse source via persistence integration and return (doc, assembled_tex)."""
+    doc = parse_and_persist_source_document(source_path)
+    return doc, assemble(doc)
 
 
 def write_tex(content: str, path: str) -> None:

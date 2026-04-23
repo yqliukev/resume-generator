@@ -5,8 +5,8 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from parser import parse_file
 from assembler import assemble, write_tex, compile_pdf
+from persistence import parse_and_persist_source_document
 
 
 class App(ctk.CTk):
@@ -137,7 +137,7 @@ class App(ctk.CTk):
             return
         self._set_status("Parsing…")
         try:
-            self.doc = parse_file(path)
+            self.doc = parse_and_persist_source_document(path)
         except Exception as exc:
             messagebox.showerror("Parse error", str(exc))
             self._set_status(f"Error: {exc}")

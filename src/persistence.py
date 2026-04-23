@@ -9,8 +9,12 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-SCHEMA_VERSION = 1
+if TYPE_CHECKING:
+    from models import ResumeDocument
+
+SCHEMA_VERSION = 2
 LINK_FILE_NAME = ".resume-links.json"
 
 TARGET_TYPE_TEX = "tex"
@@ -31,6 +35,84 @@ VALID_TARGET_STATES = {
 
 
 @dataclass
+class SectionSnapshot:
+    """Persisted section metadata derived from parser output."""
+
+    name: str
+    section_type: str | None = None
+    entry_labels: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "section_type": self.section_type,
+            "entry_labels": list(self.entry_labels),
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "SectionSnapshot | None":
+        name = raw.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+
+        section_type = raw.get("section_type")
+        if section_type is not None and not isinstance(section_type, str):
+            section_type = None
+
+        raw_entry_labels = raw.get("entry_labels")
+        entry_labels: list[str] = []
+        if isinstance(raw_entry_labels, list):
+            for label in raw_entry_labels:
+                if isinstance(label, str):
+                    entry_labels.append(label)
+
+        return cls(name=name.strip(), section_type=section_type, entry_labels=entry_labels)
+
+    @classmethod
+    def from_parser_section(cls, section: object) -> "SectionSnapshot | None":
+        name = getattr(section, "name", None)
+        if not isinstance(name, str) or not name.strip():
+            return None
+
+        section_type = getattr(section, "section_type", None)
+        if section_type is not None and not isinstance(section_type, str):
+            section_type = None
+
+        entry_labels: list[str] = []
+        entries = getattr(section, "entries", None)
+        if isinstance(entries, list):
+            for entry in entries:
+                label = getattr(entry, "display_label", None)
+                if isinstance(label, str):
+                    entry_labels.append(label)
+
+        return cls(name=name.strip(), section_type=section_type, entry_labels=entry_labels)
+
+
+def sections_from_parser_sections(sections: list[object] | None) -> list[SectionSnapshot]:
+    """Build persisted section snapshots from parser section objects."""
+    snapshots: list[SectionSnapshot] = []
+    if not isinstance(sections, list):
+        return snapshots
+
+    for section in sections:
+        snapshot = SectionSnapshot.from_parser_section(section)
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots
+
+
+def sections_from_resume_document(document: "ResumeDocument | object | None") -> list[SectionSnapshot]:
+    """Build persisted section snapshots from a parsed ResumeDocument."""
+    if document is None:
+        return []
+    sections = getattr(document, "sections", None)
+    if not isinstance(sections, list):
+        return []
+    return sections_from_parser_sections(sections)
+
+
+@dataclass
 class LinkedTarget:
     """Persisted metadata for a linked target output file."""
 
@@ -39,6 +121,7 @@ class LinkedTarget:
     state: str = TARGET_STATE_ACTIVE
     last_generated_at: str | None = None
     last_error: str | None = None
+    sections: list[SectionSnapshot] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -47,6 +130,7 @@ class LinkedTarget:
             "state": self.state,
             "last_generated_at": self.last_generated_at,
             "last_error": self.last_error,
+            "sections": [section.to_dict() for section in self.sections],
         }
 
     @classmethod
@@ -72,12 +156,23 @@ class LinkedTarget:
         if last_error is not None and not isinstance(last_error, str):
             last_error = None
 
+        raw_sections = raw.get("sections")
+        sections: list[SectionSnapshot] = []
+        if isinstance(raw_sections, list):
+            for raw_section in raw_sections:
+                if not isinstance(raw_section, dict):
+                    continue
+                snapshot = SectionSnapshot.from_dict(raw_section)
+                if snapshot is not None:
+                    sections.append(snapshot)
+
         return cls(
             path=_normalize_abs(path),
             target_type=target_type,
             state=state,
             last_generated_at=last_generated_at,
             last_error=last_error,
+            sections=sections,
         )
 
 
@@ -88,6 +183,7 @@ class SourceLinkRecord:
     source_path: str
     source_last_seen_mtime: float | None = None
     source_last_seen_size: int | None = None
+    source_sections: list[SectionSnapshot] = field(default_factory=list)
     updated_at: str | None = None
     targets: list[LinkedTarget] = field(default_factory=list)
 
@@ -98,6 +194,7 @@ class SourceLinkRecord:
                 "path": self.source_path,
                 "last_seen_mtime": self.source_last_seen_mtime,
                 "last_seen_size": self.source_last_seen_size,
+                "sections": [section.to_dict() for section in self.source_sections],
             },
             "targets": [target.to_dict() for target in self.targets],
             "updated_at": self.updated_at,
@@ -111,6 +208,7 @@ class SourceLinkRecord:
             source_path=source_abs,
             source_last_seen_mtime=mtime,
             source_last_seen_size=size,
+            source_sections=[],
             updated_at=_utc_now_iso(),
             targets=[],
         )
@@ -128,6 +226,16 @@ class SourceLinkRecord:
 
         raw_size = raw_source.get("last_seen_size")
         source_last_seen_size = int(raw_size) if isinstance(raw_size, (int, float)) else None
+
+        source_sections: list[SectionSnapshot] = []
+        raw_source_sections = raw_source.get("sections")
+        if isinstance(raw_source_sections, list):
+            for raw_section in raw_source_sections:
+                if not isinstance(raw_section, dict):
+                    continue
+                snapshot = SectionSnapshot.from_dict(raw_section)
+                if snapshot is not None:
+                    source_sections.append(snapshot)
 
         updated_at = data.get("updated_at")
         if not isinstance(updated_at, str):
@@ -147,6 +255,7 @@ class SourceLinkRecord:
             source_path=source_abs,
             source_last_seen_mtime=source_last_seen_mtime,
             source_last_seen_size=source_last_seen_size,
+            source_sections=source_sections,
             updated_at=updated_at,
             targets=targets,
         )
@@ -228,6 +337,8 @@ def record_target_link(
     target_path: str,
     target_type: str,
     generated_at: str | None = None,
+    source_sections: list[SectionSnapshot] | None = None,
+    target_sections: list[SectionSnapshot] | None = None,
 ) -> SourceLinkRecord:
     """Add or update a target link for a source and persist immediately."""
     target_type_norm = str(target_type).lower().strip()
@@ -239,6 +350,8 @@ def record_target_link(
     generated_at = generated_at or _utc_now_iso()
 
     record = load_source_links(source_abs)
+    if source_sections is not None:
+        record.source_sections = list(source_sections)
 
     found = False
     for target in record.targets:
@@ -247,6 +360,8 @@ def record_target_link(
             target.state = TARGET_STATE_ACTIVE
             target.last_generated_at = generated_at
             target.last_error = None
+            if target_sections is not None:
+                target.sections = list(target_sections)
             found = True
             break
 
@@ -258,6 +373,7 @@ def record_target_link(
                 state=TARGET_STATE_ACTIVE,
                 last_generated_at=generated_at,
                 last_error=None,
+                sections=list(target_sections or []),
             )
         )
 
@@ -290,6 +406,77 @@ def update_target_state(
 
     save_source_links(record)
     return record
+
+
+def update_source_sections(
+    source_path: str,
+    source_sections: list[SectionSnapshot],
+) -> SourceLinkRecord:
+    """Update parser-derived source section metadata and persist."""
+    source_abs = _normalize_abs(source_path)
+    record = load_source_links(source_abs)
+    record.source_sections = list(source_sections)
+    save_source_links(record)
+    return record
+
+
+def update_source_sections_from_document(
+    source_path: str,
+    document: "ResumeDocument | object | None",
+) -> SourceLinkRecord:
+    """Update source section metadata from an already parsed ResumeDocument."""
+    return update_source_sections(source_path, sections_from_resume_document(document))
+
+
+def update_target_sections(
+    source_path: str,
+    target_path: str,
+    target_sections: list[SectionSnapshot],
+) -> SourceLinkRecord:
+    """Update parser-derived section metadata for one linked target and persist."""
+    source_abs = _normalize_abs(source_path)
+    target_abs = _normalize_abs(target_path)
+    record = load_source_links(source_abs)
+
+    for target in record.targets:
+        if target.path == target_abs:
+            target.sections = list(target_sections)
+            break
+    else:
+        raise ValueError(f"Target path does not match any linked target for source: {target_abs}")
+
+    save_source_links(record)
+    return record
+
+
+def update_target_sections_from_document(
+    source_path: str,
+    target_path: str,
+    document: "ResumeDocument | object | None",
+) -> SourceLinkRecord:
+    """Update target section metadata from an already parsed ResumeDocument."""
+    return update_target_sections(
+        source_path,
+        target_path,
+        sections_from_resume_document(document),
+    )
+
+
+def refresh_source_sections_from_file(source_path: str) -> SourceLinkRecord:
+    """Parse source_path and persist source section metadata from parser results."""
+    from parser import parse_file
+
+    document = parse_file(source_path)
+    return update_source_sections_from_document(source_path, document)
+
+
+def parse_and_persist_source_document(source_path: str):
+    """Parse a source file and persist source section metadata in one call."""
+    from parser import parse_file
+
+    document = parse_file(source_path)
+    update_source_sections_from_document(source_path, document)
+    return document
 
 
 def remove_target_link(source_path: str, target_path: str) -> SourceLinkRecord:
