@@ -461,6 +461,12 @@ def update_target_sections_from_document(
         sections_from_resume_document(document),
     )
 
+def update_all_targets_from_document(
+    source_path: str,
+    document: "ResumeDocument | object | None",
+) -> SourceLinkRecord:
+    pass
+
 def refresh_source_sections_from_file(source_path: str) -> SourceLinkRecord:
     """Parse source_path and persist source section metadata from parser results."""
     from parser import parse_file
