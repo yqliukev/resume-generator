@@ -4,31 +4,127 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+DEFAULT_VERSION_ID = "default"
+
+
 @dataclass
-class Entry:
+class EntryVersion:
     '''
-      Entry within a section, e.g. "Backend Developer @ Ground News". 
-      Each "skill line" is an entry.
+      A single writeup of an item. An item may have several versions
+      (e.g. an "swe" and an "ml" version of the same job); exactly one is
+      emitted when generating a file.
     '''
-    display_label: str   # clean text for UI tree (e.g. "Backend Dev @ Ground News")
+    version_id: str      # radio option name, e.g. "swe" (unique within an item)
+    display_label: str   # clean text for UI (e.g. "ML Engineer @ Ground News")
     raw_text: str        # verbatim source lines, preserved for output
-    selected: bool = True
 
     def to_dict(self) -> dict:
         return {
+            "version_id": self.version_id,
             "display_label": self.display_label,
             "raw_text": self.raw_text,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EntryVersion | None":
+        display_label = data.get("display_label")
+        raw_text = data.get("raw_text")
+        if not isinstance(display_label, str) or not isinstance(raw_text, str):
+            return None
+        version_id = data.get("version_id")
+        if not isinstance(version_id, str) or not version_id:
+            version_id = DEFAULT_VERSION_ID
+        return cls(version_id=version_id, display_label=display_label, raw_text=raw_text)
+
+
+@dataclass
+class Entry:
+    '''
+      Item within a section, e.g. "Backend Developer @ Ground News".
+      Each "skill line" is an item. An item groups one or more versions;
+      only the active version is emitted when generating a file.
+    '''
+    item_id: str                 # grouping key (explicit @item, else version label)
+    display_label: str           # clean parent text for UI tree
+    versions: list["EntryVersion"] = field(default_factory=list)
+    selected: bool = True        # include/exclude the whole item
+    active_version_id: str = DEFAULT_VERSION_ID
+
+    def resolve_active_version_id(self) -> str:
+        '''Return a version id that actually exists, falling back gracefully.'''
+        ids = [version.version_id for version in self.versions]
+        if self.active_version_id in ids:
+            return self.active_version_id
+        if DEFAULT_VERSION_ID in ids:
+            return DEFAULT_VERSION_ID
+        return ids[0] if ids else self.active_version_id
+
+    def active_version(self) -> "EntryVersion | None":
+        target = self.resolve_active_version_id()
+        for version in self.versions:
+            if version.version_id == target:
+                return version
+        return self.versions[0] if self.versions else None
+
+    @property
+    def active_raw_text(self) -> str:
+        version = self.active_version()
+        return version.raw_text if version is not None else ""
+
+    def to_dict(self) -> dict:
+        return {
+            "item_id": self.item_id,
+            "display_label": self.display_label,
             "selected": self.selected,
+            "active_version_id": self.active_version_id,
+            "versions": [version.to_dict() for version in self.versions],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Entry | None":
         display_label = data.get("display_label")
-        raw_text = data.get("raw_text")
-        if not isinstance(display_label, str) or not isinstance(raw_text, str):
+        if not isinstance(display_label, str):
             return None
+
+        raw_versions = data.get("versions")
+        versions: list[EntryVersion] = []
+        if isinstance(raw_versions, list):
+            for raw_version in raw_versions:
+                if not isinstance(raw_version, dict):
+                    continue
+                version = EntryVersion.from_dict(raw_version)
+                if version is not None:
+                    versions.append(version)
+
+        if not versions:
+            # Backward compatibility: old schema stored a single raw_text.
+            raw_text = data.get("raw_text")
+            if not isinstance(raw_text, str):
+                return None
+            versions = [
+                EntryVersion(
+                    version_id=DEFAULT_VERSION_ID,
+                    display_label=display_label,
+                    raw_text=raw_text,
+                )
+            ]
+
+        item_id = data.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            item_id = display_label
+
+        active_version_id = data.get("active_version_id")
+        if not isinstance(active_version_id, str) or not active_version_id:
+            active_version_id = versions[0].version_id
+
         selected = data.get("selected", True)
-        return cls(display_label=display_label, raw_text=raw_text, selected=bool(selected))
+        return cls(
+            item_id=item_id,
+            display_label=display_label,
+            versions=versions,
+            selected=bool(selected),
+            active_version_id=active_version_id,
+        )
 
 
 @dataclass
@@ -95,6 +191,7 @@ class ResumeDocument(ABC):
     header: str             # \begin{center}...\end{center} block (inclusive)
     sections: list[Section] = field(default_factory=list)
     trailing: str = ""      # \end{document} and any trailing content
+    parse_warnings: list[str] = field(default_factory=list, compare=False, repr=False)  # not persisted
 
     @property
     @abstractmethod
@@ -221,9 +318,29 @@ class GeneratedFile(ResumeDocument):
 
 def _section_entries_map(document: ResumeDocument) -> dict[str, set[str]]:
     return {
-        section.name: {entry.display_label for entry in section.entries}
+        section.name: {entry.item_id for entry in section.entries}
         for section in document.sections
     }
+
+
+def _clone_versions(versions: list[EntryVersion]) -> list[EntryVersion]:
+    return [
+        EntryVersion(
+            version_id=version.version_id,
+            display_label=version.display_label,
+            raw_text=version.raw_text,
+        )
+        for version in versions
+    ]
+
+
+def _pick_active_version_id(versions: list[EntryVersion], preferred: str | None) -> str:
+    ids = [version.version_id for version in versions]
+    if preferred in ids:
+        return preferred  # type: ignore[return-value]
+    if DEFAULT_VERSION_ID in ids:
+        return DEFAULT_VERSION_ID
+    return ids[0] if ids else DEFAULT_VERSION_ID
 
 
 def validate_generated_subset(source: SourceFile, generated: GeneratedFile) -> None:
@@ -244,10 +361,10 @@ def validate_generated_subset(source: SourceFile, generated: GeneratedFile) -> N
 
         source_entries = source_sections[target_section.name]
         for target_entry in target_section.entries:
-            if target_entry.display_label not in source_entries:
+            if target_entry.item_id not in source_entries:
                 raise ValueError(
                     "Generated entry is not present in source section "
-                    f"{target_section.name}: {target_entry.display_label}"
+                    f"{target_section.name}: {target_entry.item_id}"
                 )
 
 
@@ -271,18 +388,25 @@ def merge_source_document(current: SourceFile, template: SourceFile | None = Non
         selected = template_section.selected if template_section is not None else True
 
         template_entries = {
-            entry.display_label: entry for entry in template_section.entries
+            entry.item_id: entry for entry in template_section.entries
         } if template_section is not None else {}
         merged_entries: list[Entry] = []
 
         for current_entry in current_section.entries:
-            template_entry = template_entries.get(current_entry.display_label)
+            template_entry = template_entries.get(current_entry.item_id)
             entry_selected = template_entry.selected if template_entry is not None else True
+            preferred_version = (
+                template_entry.active_version_id if template_entry is not None
+                else current_entry.active_version_id
+            )
+            versions = _clone_versions(current_entry.versions)
             merged_entries.append(
                 Entry(
+                    item_id=current_entry.item_id,
                     display_label=current_entry.display_label,
-                    raw_text=current_entry.raw_text,
+                    versions=versions,
                     selected=entry_selected,
+                    active_version_id=_pick_active_version_id(versions, preferred_version),
                 )
             )
 
@@ -390,21 +514,28 @@ class LinkLibrary:
                 selected = True
 
             template_entries = {
-                entry.display_label: entry for entry in template_section.entries
+                entry.item_id: entry for entry in template_section.entries
             } if template_section is not None else {}
             entries: list[Entry] = []
 
             for source_entry in source_section.entries:
-                template_entry = template_entries.get(source_entry.display_label)
+                template_entry = template_entries.get(source_entry.item_id)
                 entry_selected = template_entry.selected if template_entry is not None else source_entry.selected
+                preferred_version = (
+                    template_entry.active_version_id if template_entry is not None
+                    else source_entry.active_version_id
+                )
                 if template is not None and template_entry is None:
                     entry_selected = True
 
+                versions = _clone_versions(source_entry.versions)
                 entries.append(
                     Entry(
+                        item_id=source_entry.item_id,
                         display_label=source_entry.display_label,
-                        raw_text=source_entry.raw_text,
+                        versions=versions,
                         selected=entry_selected,
+                        active_version_id=_pick_active_version_id(versions, preferred_version),
                     )
                 )
 

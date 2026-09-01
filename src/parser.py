@@ -1,5 +1,97 @@
 import re
-from models import Entry, Section, SourceFile
+from dataclasses import dataclass
+from models import DEFAULT_VERSION_ID, Entry, EntryVersion, Section, SourceFile
+
+
+# ---------------------------------------------------------------------------
+# Version markers
+# ---------------------------------------------------------------------------
+
+_ITEM_MARKER_RE = re.compile(r'^\s*%\s*@item:\s*(.+?)\s*$')
+_VERSION_MARKER_RE = re.compile(r'^\s*%\s*@version:\s*(.+?)\s*$')
+
+
+@dataclass
+class _Candidate:
+    """A single parsed block before grouping into versioned items."""
+    display_label: str
+    raw_text: str
+    item_id: str | None
+    version_id: str | None
+
+
+def _extract_markers(raw_text: str) -> tuple[str | None, str | None]:
+    """Scan a block's comment lines for @item / @version markers."""
+    item_id: str | None = None
+    version_id: str | None = None
+    for line in raw_text.splitlines():
+        item_match = _ITEM_MARKER_RE.match(line)
+        if item_match:
+            item_id = item_match.group(1).strip()
+            continue
+        version_match = _VERSION_MARKER_RE.match(line)
+        if version_match:
+            version_id = version_match.group(1).strip()
+    return item_id or None, version_id or None
+
+
+def _group_candidates(candidates: list[_Candidate]) -> tuple[list[Entry], list[str]]:
+    """Group same-@item blocks into versioned entries; leave unmarked standalone."""
+    entries: list[Entry] = []
+    warnings: list[str] = []
+    index_by_item: dict[str, int] = {}
+
+    for candidate in candidates:
+        has_marker = candidate.item_id is not None
+        version_id = candidate.version_id or DEFAULT_VERSION_ID
+        version = EntryVersion(
+            version_id=version_id,
+            display_label=candidate.display_label,
+            raw_text=candidate.raw_text,
+        )
+
+        if has_marker and candidate.item_id in index_by_item:
+            entry = entries[index_by_item[candidate.item_id]]
+            existing = next(
+                (v for v in entry.versions if v.version_id == version_id), None
+            )
+            if existing is not None:
+                warnings.append(
+                    f"Duplicate version '{version_id}' for item "
+                    f"'{candidate.item_id}'; keeping the later block."
+                )
+                entry.versions = [
+                    version if v.version_id == version_id else v
+                    for v in entry.versions
+                ]
+            else:
+                entry.versions.append(version)
+            continue
+
+        if has_marker:
+            item_id = candidate.item_id
+            parent_label = candidate.item_id
+        else:
+            # Unmarked blocks are standalone items, never grouped, and keyed by
+            # display_label to stay compatible with pre-versioning link libraries.
+            item_id = candidate.display_label
+            parent_label = candidate.display_label
+
+        entry = Entry(
+            item_id=item_id,  # type: ignore[arg-type]
+            display_label=parent_label,  # type: ignore[arg-type]
+            versions=[version],
+            selected=True,
+            active_version_id=version_id,
+        )
+        if has_marker:
+            index_by_item[item_id] = len(entries)  # type: ignore[index]
+        entries.append(entry)
+
+    for entry in entries:
+        entry.active_version_id = entry.versions[0].version_id
+
+    return entries, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -164,10 +256,10 @@ def section_split(body_lines: list[str]) -> list[tuple[list[str], list[str]]]:
 
 def parse_standard_entries(
     content_lines: list[str],
-) -> tuple[str, list[Entry], str]:
+) -> tuple[str, list[_Candidate], str]:
     """
     Parse entries from a standard section (Work Experience / Projects / Education).
-    Returns (list_prefix, entries, list_suffix).
+    Returns (list_prefix, candidates, list_suffix).
     """
     trigger_re = re.compile(r'\\resumeSubheading\b|\\resumeProjectHeading\b|\\resumeHeading\b')
 
@@ -184,7 +276,7 @@ def parse_standard_entries(
     list_prefix_end = entry_start_list[0]
     list_prefix = ''.join(content_lines[:list_prefix_end])
 
-    entries = []
+    candidates: list[_Candidate] = []
     for k, ti in enumerate(trigger_indices):
         entry_start = entry_start_list[k]
 
@@ -201,13 +293,21 @@ def parse_standard_entries(
         label = _build_standard_label(
             content_lines, ti, trigger_re.search(content_lines[ti]).group()
         )
-        entries.append(Entry(display_label=label, raw_text=raw_text))
+        item_id, version_id = _extract_markers(raw_text)
+        candidates.append(
+            _Candidate(
+                display_label=label,
+                raw_text=raw_text,
+                item_id=item_id,
+                version_id=version_id,
+            )
+        )
 
     # list_suffix: everything after last entry's \\resumeItemListEnd
     last_entry_end_in_content = _find_last_resumeitemlistend(content_lines, trigger_indices[-1])
     list_suffix = ''.join(content_lines[last_entry_end_in_content + 1:])
 
-    return list_prefix, entries, list_suffix
+    return list_prefix, candidates, list_suffix
 
 
 def _find_last_resumeitemlistend(lines: list[str], from_idx: int) -> int:
@@ -247,10 +347,10 @@ def _build_standard_label(lines: list[str], trigger_idx: int, trigger: str) -> s
 
 def parse_skills_entries(
     content_lines: list[str],
-) -> tuple[str, list[Entry], str]:
+) -> tuple[str, list[_Candidate], str]:
     """
     Parse entries from a skills section (\\resumeItem per entry).
-    Returns (list_prefix, entries, list_suffix).
+    Returns (list_prefix, candidates, list_suffix).
     """
     item_re = re.compile(r'\\resumeItem\{')
 
@@ -262,7 +362,7 @@ def parse_skills_entries(
 
     list_prefix = ''.join(content_lines[:first_item])
 
-    entries = []
+    candidates: list[_Candidate] = []
     i = first_item
     last_item_end = first_item
 
@@ -308,13 +408,34 @@ def parse_skills_entries(
 
         # Build display label: text inside the braces
         label = _build_skills_label(raw_text)
-        entries.append(Entry(display_label=label, raw_text=raw_text))
+        # Skills raw_text excludes preceding comments, so scan them for markers.
+        preceding = _preceding_comment_block(content_lines, i)
+        item_id, version_id = _extract_markers(preceding + raw_text)
+        candidates.append(
+            _Candidate(
+                display_label=label,
+                raw_text=raw_text,
+                item_id=item_id,
+                version_id=version_id,
+            )
+        )
 
         last_item_end = entry_end
         i = entry_end + 1  # advance past this entry
 
     list_suffix = ''.join(content_lines[last_item_end + 1:])
-    return list_prefix, entries, list_suffix
+    return list_prefix, candidates, list_suffix
+
+
+def _preceding_comment_block(lines: list[str], idx: int) -> str:
+    """Return contiguous blank/comment lines immediately before idx."""
+    j = idx - 1
+    collected: list[str] = []
+    while j >= 0 and _is_blank_or_comment(lines[j]):
+        collected.append(lines[j])
+        j -= 1
+    collected.reverse()
+    return ''.join(collected)
 
 
 def _build_skills_label(raw_text: str) -> str:
@@ -349,7 +470,9 @@ def _build_skills_label(raw_text: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse_section_chunk(header_lines: list[str], content_lines: list[str]) -> Section:
+def parse_section_chunk(
+    header_lines: list[str], content_lines: list[str]
+) -> tuple[Section, list[str]]:
     raw_header = ''.join(header_lines)
 
     # Extract section name
@@ -365,12 +488,15 @@ def parse_section_chunk(header_lines: list[str], content_lines: list[str]) -> Se
     joined = ''.join(content_lines)
     if r'\resumeSubHeadingListStart' in joined:
         section_type = 'standard'
-        list_prefix, entries, list_suffix = parse_standard_entries(content_lines)
+        list_prefix, candidates, list_suffix = parse_standard_entries(content_lines)
     else:
         section_type = 'skills'
-        list_prefix, entries, list_suffix = parse_skills_entries(content_lines)
+        list_prefix, candidates, list_suffix = parse_skills_entries(content_lines)
 
-    return Section(
+    entries, warnings = _group_candidates(candidates)
+    warnings = [f"[{name}] {message}" for message in warnings]
+
+    section = Section(
         name=name,
         section_type=section_type,
         raw_header=raw_header,
@@ -378,6 +504,7 @@ def parse_section_chunk(header_lines: list[str], content_lines: list[str]) -> Se
         list_suffix=list_suffix,
         entries=entries,
     )
+    return section, warnings
 
 
 def parse_file(path: str) -> SourceFile:
@@ -386,12 +513,21 @@ def parse_file(path: str) -> SourceFile:
 
     preamble, header, body_lines, trailing = zone_extract(lines)
     chunks = section_split(body_lines)
-    sections = [parse_section_chunk(hl, cl) for hl, cl in chunks]
 
-    return SourceFile(
+    sections: list[Section] = []
+    warnings: list[str] = []
+    for header_lines, content_lines in chunks:
+        section, section_warnings = parse_section_chunk(header_lines, content_lines)
+        sections.append(section)
+        warnings.extend(section_warnings)
+
+    source = SourceFile(
         path=path,
         preamble=preamble,
         header=header,
         sections=sections,
         trailing=trailing,
     )
+    # Non-persisted diagnostics for the GUI to surface.
+    source.parse_warnings = warnings
+    return source
