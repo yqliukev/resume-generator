@@ -3,3 +3,4 @@ __pycache__
 sandbox*
 *.tex
 *.json
+.venv
