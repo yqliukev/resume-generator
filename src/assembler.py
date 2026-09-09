@@ -17,7 +17,7 @@ def assemble(doc: ResumeDocument) -> str:
         if selected_entries:
             parts.append(section.list_prefix)
             for entry in selected_entries:
-                parts.append(entry.raw_text)
+                parts.append(entry.active_raw_text)
             parts.append(section.list_suffix)
 
     parts.append(doc.trailing)

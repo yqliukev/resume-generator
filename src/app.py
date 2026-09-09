@@ -33,10 +33,14 @@ class App(ctk.CTk):
         # State maps: keyed by section index / (section_idx, entry_idx)
         self.section_vars: dict[int, tkinter.IntVar] = {}
         self.entry_vars: dict[tuple, tkinter.IntVar] = {}
+        self.version_vars: dict[tuple, tkinter.StringVar] = {}
 
         # Keep references so GC doesn't collect them
         self._section_cb_refs: list = []
         self._entry_cb_refs: list[list] = []
+        self._version_radio_refs: list = []
+
+        self._pending_warnings: list[str] = []
 
         self._build_ui()
 
@@ -211,6 +215,7 @@ class App(ctk.CTk):
             self._set_status(f"Error: {exc}")
             return False
 
+        self._pending_warnings = list(getattr(parsed_source, "parse_warnings", []))
         source_path = os.path.abspath(path)
         keep_library = self.link_library is not None and self.link_library.source_path == source_path
         if keep_library:
@@ -245,7 +250,7 @@ class App(ctk.CTk):
 
         if not self._load_source_file(path, reset_output_fields=True):
             return
-        self._set_status("Source loaded")
+        self._announce_load("Source loaded")
 
     def _refresh_source_file(self):
         if not self.file_path:
@@ -255,7 +260,7 @@ class App(ctk.CTk):
         if not self._load_source_file(self.file_path, reset_output_fields=False):
             return
 
-        self._set_status("Source refreshed")
+        self._announce_load("Source refreshed")
 
     def _open_link_library(self):
         path = filedialog.askopenfilename(
@@ -275,11 +280,15 @@ class App(ctk.CTk):
 
         source_path = library.source_path or library.source_file.path
         loaded_source: SourceFile | None = None
+        self._pending_warnings = []
         if source_path and os.path.exists(source_path):
             try:
-                loaded_source = merge_source_document(parse_file(source_path), library.source_file)
+                parsed_source = parse_file(source_path)
+                self._pending_warnings = list(getattr(parsed_source, "parse_warnings", []))
+                loaded_source = merge_source_document(parsed_source, library.source_file)
             except Exception:
                 loaded_source = None
+                self._pending_warnings = []
 
         if loaded_source is None:
             loaded_source = SourceFile.from_dict(library.source_file.to_dict()) or library.source_file
@@ -302,7 +311,7 @@ class App(ctk.CTk):
 
         self._build_tree()
         self._set_controls_enabled(True)
-        self._set_status("Link library loaded")
+        self._announce_load("Link library loaded")
 
     # ------------------------------------------------------------------
     # Tree building
@@ -314,15 +323,20 @@ class App(ctk.CTk):
             widget.destroy()
         self.section_vars.clear()
         self.entry_vars.clear()
+        self.version_vars.clear()
         self._section_cb_refs.clear()
         self._entry_cb_refs.clear()
+        self._version_radio_refs.clear()
 
         if not self.doc:
             return
 
         SECTION_FONT = ctk.CTkFont(size=13, weight="bold")
         ENTRY_FONT = ctk.CTkFont(size=12)
+        VERSION_FONT = ctk.CTkFont(size=11)
+        VERSION_COLOR = "#5AB0F0"  # distinct accent so versions read differently
 
+        row = 0
         for si, section in enumerate(self.doc.sections):
             self._section_cb_refs.append(None)
             self._entry_cb_refs.append([])
@@ -339,10 +353,11 @@ class App(ctk.CTk):
                 command=lambda i=si: self._on_section_toggle(i),
             )
             sec_cb.grid(
-                row=si * 100, column=0, sticky="w",
+                row=row, column=0, sticky="w",
                 padx=8, pady=(10 if si > 0 else 4, 2)
             )
             self._section_cb_refs[si] = sec_cb
+            row += 1
 
             # Entry rows (indented)
             for ei, entry in enumerate(section.entries):
@@ -361,12 +376,49 @@ class App(ctk.CTk):
                     command=lambda i=si, j=ei: self._on_entry_toggle(i, j),
                 )
                 ent_cb.grid(
-                    row=si * 100 + ei + 1, column=0, sticky="w",
+                    row=row, column=0, sticky="w",
                     padx=(30, 8), pady=1
                 )
                 self._entry_cb_refs[si].append(ent_cb)
+                row += 1
+
+                # Version radios (only when an item has more than one version)
+                if len(entry.versions) > 1:
+                    version_var = tkinter.StringVar(
+                        value=entry.resolve_active_version_id()
+                    )
+                    self.version_vars[(si, ei)] = version_var
+
+                    for version in entry.versions:
+                        radio_label = self._version_radio_label(entry, version)
+                        radio = ctk.CTkRadioButton(
+                            self.tree_frame,
+                            text=radio_label,
+                            variable=version_var,
+                            value=version.version_id,
+                            font=VERSION_FONT,
+                            text_color=VERSION_COLOR,
+                            radiobutton_width=16,
+                            radiobutton_height=16,
+                            command=lambda i=si, j=ei: self._on_version_change(i, j),
+                        )
+                        radio.grid(
+                            row=row, column=0, sticky="w",
+                            padx=(56, 8), pady=(0, 1)
+                        )
+                        self._version_radio_refs.append(radio)
+                        row += 1
 
         self._update_preview()
+
+    @staticmethod
+    def _version_radio_label(entry, version) -> str:
+        title = version.display_label
+        if len(title) > 44:
+            title = title[:42] + "…"
+        if version.display_label and version.display_label != entry.display_label:
+            return f"{version.version_id} — {title}"
+        return version.version_id
 
     # ------------------------------------------------------------------
     # Checkbox event handlers
@@ -390,6 +442,10 @@ class App(ctk.CTk):
             self.section_vars[si].set(0)
         else:
             self.section_vars[si].set(1)
+        self._update_preview()
+
+    def _on_version_change(self, _si: int, _ei: int):
+        # Choosing a version does not change include/exclude state.
         self._update_preview()
 
     # ------------------------------------------------------------------
@@ -416,9 +472,17 @@ class App(ctk.CTk):
                 entry_on = bool(self.entry_vars.get((si, ei), tkinter.IntVar()).get())
                 if sec_selected and entry_on:
                     selected += 1
+                    text = f"[{section.name}]  {entry.display_label[:55]}"
+                    if len(entry.versions) > 1:
+                        version_var = self.version_vars.get((si, ei))
+                        active_id = (
+                            version_var.get() if version_var is not None
+                            else entry.resolve_active_version_id()
+                        )
+                        text += f"  [{active_id}]"
                     sec_label = ctk.CTkLabel(
                         self.preview_frame,
-                        text=f"[{section.name}]  {entry.display_label[:55]}",
+                        text=text,
                         anchor="w",
                         font=ctk.CTkFont(size=11),
                         wraplength=320,
@@ -476,6 +540,9 @@ class App(ctk.CTk):
                 entry.selected = bool(
                     self.entry_vars.get((si, ei), tkinter.IntVar(value=1)).get()
                 )
+                version_var = self.version_vars.get((si, ei))
+                if version_var is not None:
+                    entry.active_version_id = version_var.get()
 
     def _ensure_library(self) -> LinkLibrary | None:
         if not self.doc:
@@ -568,3 +635,12 @@ class App(ctk.CTk):
 
     def _set_status(self, msg: str):
         self.status_label.configure(text=f"Status: {msg}")
+
+    def _announce_load(self, default_msg: str):
+        if self._pending_warnings:
+            count = len(self._pending_warnings)
+            self._set_status(
+                f"{default_msg} ({count} version warning(s)): {self._pending_warnings[0]}"
+            )
+        else:
+            self._set_status(default_msg)
